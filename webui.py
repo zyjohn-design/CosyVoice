@@ -14,6 +14,7 @@
 import os
 import sys
 import argparse
+from packaging import version
 import gradio as gr
 import numpy as np
 import torch
@@ -150,15 +151,21 @@ def main():
                                       seed, stream, speed],
                               outputs=[audio_output])
         mode_checkbox_group.change(fn=change_instruction, inputs=[mode_checkbox_group], outputs=[instruction_text])
-    demo.queue(max_size=4, default_concurrency_limit=2)
-    demo.launch(server_name='0.0.0.0', server_port=args.port)
+    if version.parse(gr.__version__) >= version.parse("4.0.0"):
+        demo.queue(max_size=4, default_concurrency_limit=2)
+    else:
+        demo.queue(max_size=4, concurrency_count=2)
+    demo.launch(server_name="127.0.0.1", server_port=args.port)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--port',
                         type=int,
-                        default=8000)
+                        default=5000)
+    parser.add_argument('--host',
+                        type=str,
+                        default='0.0.0.0')
     parser.add_argument('--model_dir',
                         type=str,
                         default='pretrained_models/CosyVoice2-0.5B',
