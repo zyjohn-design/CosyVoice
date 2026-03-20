@@ -1,0 +1,41 @@
+# ============================================================
+# Docker 构建排除文件
+# 放在 CosyVoice 项目根目录, 与 Dockerfile 同级
+# ============================================================
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# 模型文件 (通过 docker-compose volumes 挂载, 不打进镜像)
+pretrained_models/
+
+# 运行时生成的文件
+static/wavs/
+uploads/
+logs/
+*.wav
+*.mp3
+
+# Git
+.git/
+.gitmodules
+
+# macOS
+.DS_Store
+._*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker
+cosyvoice-tts-api-amd64.tar
+cosyvoice-tts-api-amd64.tar.gz
+cosyvoice-tts-api-gpu-full.tar

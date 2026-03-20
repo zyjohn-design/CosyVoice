@@ -1,0 +1,51 @@
+# ============================================================
+# 在已构建的 cosyvoice-tts-api 镜像上叠加 TensorRT + vLLM
+#
+# 构建:
+#   docker build -t cosyvoice-tts-api:gpu-full -f Dockerfile.gpu-full .
+#
+# 只装 TensorRT:
+#   docker build -t cosyvoice-tts-api:trt -f Dockerfile.gpu-full --target trt .
+#
+# 只装 vLLM:
+#   docker build -t cosyvoice-tts-api:vllm -f Dockerfile.gpu-full --target vllm .
+# ============================================================
+
+# ── 基础: 你已构建好的镜像 ──
+FROM cosyvoice-tts-api:latest AS base
+
+ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV UV_HTTP_TIMEOUT=300
+
+# ══════════════════════════════════════════════════════════════
+#  Stage 1: 安装 TensorRT (Flow Matching 加速 2~3x)
+# ══════════════════════════════════════════════════════════════
+FROM base AS trt
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install \
+        tensorrt-cu12==10.13.3.9 \
+        tensorrt-cu12-bindings==10.13.3.9 \
+        tensorrt-cu12-libs==10.13.3.9
+
+# ══════════════════════════════════════════════════════════════
+#  Stage 2: 安装 vLLM (LLM decoding 加速 4x)
+#  注意: vLLM 会覆盖 transformers 和 numpy 版本
+# ══════════════════════════════════════════════════════════════
+FROM trt AS vllm
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install \
+        vllm==v0.9.0 \
+        transformers==4.51.3 \
+        numpy==1.26.4
+
+# ══════════════════════════════════════════════════════════════
+#  最终镜像: TensorRT + vLLM 全部包含
+# ══════════════════════════════════════════════════════════════
+FROM vllm AS full
+
+CMD ["python", "-m", "uvicorn", "app:app", \
+     "--host", "0.0.0.0", "--port", "8080", \
+     "--workers", "1", "--log-level", "info", \
+     "--timeout-keep-alive", "300"]

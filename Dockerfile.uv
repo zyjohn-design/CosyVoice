@@ -1,0 +1,128 @@
+# ============================================================
+# CosyVoice TTS API - 生产 Docker 镜像 (uv 版本)
+# 
+# 对比 conda 版本的优势:
+#   - 构建速度快 3~5 倍 (uv 解析依赖比 conda/pip 快 10x)
+#   - 镜像体积小 (无 conda 运行时 ~2GB 开销)
+#   - 依赖锁定更可靠
+#
+# 目标 GPU: NVIDIA L20 (48GB) / A800 (80GB)
+# ============================================================
+
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# ══════════════════════════════════════════════════════════════
+#  Step 1: 系统依赖
+# ══════════════════════════════════════════════════════════════
+RUN apt-get update -y --fix-missing && \
+    apt-get install -y --no-install-recommends \
+        git build-essential curl wget \
+        ffmpeg sox libsox-dev \
+        unzip git-lfs ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    git lfs install
+
+# ══════════════════════════════════════════════════════════════
+#  Step 2: 安装 uv (Rust 实现的 Python 包管理器)
+# ══════════════════════════════════════════════════════════════
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# ══════════════════════════════════════════════════════════════
+#  Step 3: 安装 Python 3.11 (uv 管理)
+# ══════════════════════════════════════════════════════════════
+RUN uv python install 3.11
+
+# ══════════════════════════════════════════════════════════════
+#  Step 4: 复制项目代码
+#  docker build context = CosyVoice 项目根目录
+# ══════════════════════════════════════════════════════════════
+WORKDIR /workspace/CosyVoice
+COPY . .
+
+ENV PYTHONPATH="/workspace/CosyVoice:/workspace/CosyVoice/third_party/Matcha-TTS"
+
+# ══════════════════════════════════════════════════════════════
+#  Step 5: 创建虚拟环境 + 安装项目依赖
+#
+#  uv pip install 比 pip 快 10~20 倍:
+#    - 并行下载
+#    - Rust 实现的依赖解析
+#    - 全局缓存
+#
+#  --index-strategy unsafe-best-match:
+#    解决多 index-url 依赖冲突 (PyTorch CUDA / ONNX Runtime)
+#
+#  pynini 必须用 conda 装? 不, uv 可以装 pynini 的 wheel:
+#    如果 uv 装不上 pynini, 会 fallback 到 wetext (功能一样)
+# ══════════════════════════════════════════════════════════════
+RUN uv venv --python 3.11 /workspace/.venv
+ENV VIRTUAL_ENV="/workspace/.venv"
+ENV PATH="/workspace/.venv/bin:$PATH"
+
+# ── 配置 uv 默认使用阿里镜像源 ──
+ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV UV_HTTP_TIMEOUT=300
+
+# ── 构建工具 ──
+RUN uv pip install "setuptools<71" wheel wheel-stub --no-cache
+
+# ── 安装 requirements.txt ──
+# tensorrt-cu12 系列包共 ~2GB, 源码构建极慢
+# 先排除它们, 部署到 GPU 服务器后按需安装 (LOAD_TRT=true 时才需要)
+RUN grep -v "^tensorrt" requirements.txt > /tmp/requirements_no_trt.txt && \
+    uv pip install -r /tmp/requirements_no_trt.txt \
+        --index-strategy unsafe-best-match \
+        --no-build-isolation-package openai-whisper \
+        --no-cache
+
+# ── (可选) 安装 TensorRT: Flow Matching 加速 2~3x ──
+# 在 GPU 服务器上取消注释, macOS 构建时跳过
+RUN uv pip install \
+        tensorrt-cu12==10.13.3.9 \
+        tensorrt-cu12-bindings==10.13.3.9 \
+        tensorrt-cu12-libs==10.13.3.9 \
+        --no-cache
+
+# ── 安装 pynini (WeTextProcessing 需要, 装不上不影响运行) ──
+RUN uv pip install pynini==2.1.6 --no-cache || \
+    echo "pynini install failed, will use wetext fallback"
+
+# ── 安装 API 服务额外依赖 ──
+# torchcodec:       CosyVoice 内部 load_wav / add_zero_shot_spk 需要
+# python-multipart: FastAPI 文件上传
+RUN uv pip install \
+        torchcodec \
+        python-multipart>=0.0.6 \
+        --no-cache
+
+# ── (可选) 安装 vLLM: LLM decoding 加速 4x ──
+# 取消注释启用, 注意会覆盖 transformers/numpy 版本
+RUN uv pip install vllm==v0.9.0 transformers==4.51.3 numpy==1.26.4 --no-cache
+
+# ══════════════════════════════════════════════════════════════
+#  Step 6: 创建运行时目录
+# ══════════════════════════════════════════════════════════════
+RUN mkdir -p speakers uploads static/wavs logs
+
+# ══════════════════════════════════════════════════════════════
+#  Step 7: 端口 & 健康检查
+# ══════════════════════════════════════════════════════════════
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=180s \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# ══════════════════════════════════════════════════════════════
+#  Step 8: 启动命令
+#  默认启动 app.py (CosyVoice2 专用)
+#  全模型兼容改为: app_all_model:app
+# ══════════════════════════════════════════════════════════════
+CMD ["python", "-m", "uvicorn", "app:app", \
+     "--host", "0.0.0.0", "--port", "8080", \
+     "--workers", "1", "--log-level", "info", \
+     "--timeout-keep-alive", "300"]

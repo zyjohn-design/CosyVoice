@@ -1,0 +1,113 @@
+# ============================================================
+# CosyVoice TTS API - Docker Compose (uv 版镜像)
+#
+# 使用:
+#   docker compose -f docker-compose.uv.yml up -d
+#   docker compose -f docker-compose.uv.yml logs -f
+#   docker compose -f docker-compose.uv.yml down
+# ============================================================
+
+services:
+  cosyvoice-tts:
+    # 基础镜像用 Dockerfile.uv 构建的
+    # 如果装了 TensorRT + vLLM, 改为 cosyvoice-tts-api:gpu-full
+    image: ${IMAGE_NAME:-cosyvoice-tts-api:slim}
+    container_name: cosyvoice-tts
+    restart: unless-stopped
+
+    # ── GPU 配置 ──
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+        limits:
+          memory: 32G
+
+    # ── 端口 ──
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+    # ── 挂载 ──
+    volumes:
+      # 模型目录 (宿主机 → 容器)
+      - ${MODEL_HOST_DIR:-./pretrained_models}:/workspace/CosyVoice/pretrained_models
+
+      # wetext 缓存
+      - ${WETEXT_CACHE_DIR:-/root/.cache/modelscope/hub/pengzhendong/wetext}:/root/.cache/modelscope/hub/pengzhendong/wetext
+      - ./Matcha-TTS:/workspace/CosyVoice/third_party/Matcha-TTS
+      - ./app.py:/workspace/CosyVoice/app.py
+      - ./model.py:/workspace/CosyVoice/cosyvoice/cli/model.py
+      - ./cosyvoice2.py:/workspace/CosyVoice/cosyvoice/vllm/cosyvoice2.py
+
+      # 说话人
+      #- ./speakers:/workspace/CosyVoice/speakers
+
+      # 生成音频
+      #- ./static/wavs:/workspace/CosyVoice/static/wavs
+
+      # 日志
+      - ./logs:/workspace/CosyVoice/logs
+
+    # ── 环境变量 ──
+    environment:
+      - MODEL_DIR=${MODEL_DIR:-pretrained_models/CosyVoice2-0.5B}
+      - HOST=0.0.0.0
+      - PORT=8080
+      - MAX_CONCURRENCY=${MAX_CONCURRENCY:-4}
+      - LOAD_JIT=${LOAD_JIT:-true}
+      - LOAD_TRT=${LOAD_TRT:-false}
+      - LOAD_VLLM=${LOAD_VLLM:-false}
+      - FP16=${FP16:-true}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - CUDA_LAUNCH_BLOCKING=0
+      - MODELSCOPE_CACHE=/root/.cache/modelscope
+      - MODELSCOPE_OFFLINE=true
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_OFFLINE=1
+      # 禁止 wetext 自动下载, 直接指定缓存路径
+      - WETEXT_CACHE_DIR=/root/.cache/modelscope/hub/pengzhendong/wetext
+
+    # ── 启动命令 ──
+    # uv 版镜像不需要 conda activate, 直接用 venv 中的 python
+    # 切换全模型兼容: 改 app:app 为 app_all_model:app
+    command: >
+      python -m uvicorn app:app
+      --host 0.0.0.0
+      --port 8080
+      --workers 1
+      --log-level info
+      --timeout-keep-alive 300
+
+    # ── 健康检查 ──
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+    # ── 日志 ──
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    # ── 共享内存 ──
+    shm_size: "4g"
+
+    # ── 网络 ──
+    networks:
+      - cosyvoice-net
+
+networks:
+  cosyvoice-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
