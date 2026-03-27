@@ -1,0 +1,113 @@
+# ============================================================
+# CosyVoice TTS API — 华为 NPU 910B Docker Compose
+#
+# 与 GPU 版 (docker-compose.uv.yml) 的差异:
+#   - 设备映射: /dev/davinci{N} (非 NVIDIA GPU)
+#   - 驱动挂载: 宿主机 NPU 驱动
+#   - 启动文件: app_npu.py (非 app.py)
+#   - 代码挂载: cosyvoice2_npu.py, model_npu.py
+#   - LOAD_JIT/TRT=false (NPU 不支持)
+#
+# 使用:
+#   # 生产模式
+#   docker compose -f docker-compose.npu.yml up -d
+#
+#   # 调试模式 (进容器手动装包/启动)
+#   NPU_MODE=debug docker compose -f docker-compose.npu.yml up -d
+#   docker exec -it cosyvoice-tts bash
+# ============================================================
+
+services:
+  cosyvoice-tts:
+    build:
+      context: .
+      dockerfile: Dockerfile.npu
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    image: cosyvoice-tts-api:npu
+    container_name: cosyvoice-tts
+    restart: unless-stopped
+
+    # ── 网络模式 ──
+    # 调试: network_mode: host (访问内网 pip 源)
+    # 生产: 自定义网络 + ports 映射
+    network_mode: ${NPU_NETWORK_MODE:-bridge}
+
+    # ── NPU 设备映射 ──
+    # NPU_DEVICE_ID: 要使用的 NPU 卡号 (默认 0)
+    # 多卡: 添加多个 /dev/davinci{N}
+    devices:
+      - /dev/davinci${NPU_DEVICE_ID:-0}:/dev/davinci${NPU_DEVICE_ID:-0}
+      - /dev/davinci_manager:/dev/davinci_manager
+      - /dev/devmm_svm:/dev/devmm_svm
+      - /dev/hisi_hdc:/dev/hisi_hdc
+
+    volumes:
+      # ── NPU 驱动 (宿主机挂载, 必须) ──
+      - /usr/local/dcmi:/usr/local/dcmi
+      - /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+      - /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/
+      - /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info
+      - /etc/ascend_install.info:/etc/ascend_install.info
+
+      # ── 模型 ──
+      - ${MODEL_HOST_DIR:-./pretrained_models}:/workspace/CosyVoice/pretrained_models
+
+      # ── wetext 缓存 ──
+      - ${WETEXT_CACHE_DIR:-./pengzhendong/wetext}:/root/.cache/modelscope/hub/pengzhendong/wetext
+
+      # ── Matcha-TTS submodule ──
+      - ./Matcha-TTS:/workspace/CosyVoice/third_party/Matcha-TTS
+
+      # ── 说话人 ──
+      - ./speakers:/workspace/CosyVoice/speakers
+
+      # ── NPU 专用代码热更新 ──
+      # 注意: 这里挂载的是 NPU 版本, 与 GPU 版完全分离
+      - ./app_npu.py:/workspace/CosyVoice/app_npu.py
+      - ./cosyvoice2_npu.py:/workspace/CosyVoice/cosyvoice/vllm/cosyvoice2.py
+
+      # ── 输出 ──
+      - ./logs:/workspace/CosyVoice/logs
+
+    environment:
+      - MODEL_DIR=${MODEL_DIR:-pretrained_models/CosyVoice2-0.5B}
+      - HOST=0.0.0.0
+      - PORT=8080
+      - MAX_CONCURRENCY=${MAX_CONCURRENCY:-4}
+      # ── NPU 优化参数 ──
+      - LOAD_JIT=false            # NPU 不支持 TorchScript JIT
+      - LOAD_TRT=false            # TensorRT 是 NVIDIA 专有
+      - LOAD_VLLM=${LOAD_VLLM:-false}  # vLLM-Ascend (可选, 默认关闭)
+      - FP16=${FP16:-true}        # NPU 910B 推荐 FP16
+      # ── vLLM NPU 专用 ──
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn  # NPU 必须用 spawn
+
+    # ── 生产模式 (默认) ──
+    command: ["python", "-m", "uvicorn", "app_npu:app",
+              "--host", "0.0.0.0", "--port", "8080",
+              "--workers", "1", "--log-level", "info",
+              "--timeout-keep-alive", "300"]
+
+    # ── 调试模式 (取消注释, 注释上面的 command) ──
+    # command: ["sleep", "infinity"]
+
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+    shm_size: "4g"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

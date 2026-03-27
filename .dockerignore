@@ -24,6 +24,7 @@ logs/
 # Git
 .git/
 .gitmodules
+.github/
 
 # macOS
 .DS_Store
@@ -36,6 +37,6 @@ logs/
 *.swo
 
 # Docker
-cosyvoice-tts-api-amd64.tar
-cosyvoice-tts-api-amd64.tar.gz
-cosyvoice-tts-api-gpu-full.tar
+*.tar.gz
+*.tar
+*.md

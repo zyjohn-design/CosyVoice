@@ -1,0 +1,72 @@
+# ============================================================
+# CosyVoice TTS API — 华为 NPU 910B 生产镜像
+# 基础镜像: vllm-ascend (含 CANN + torch_npu + PyTorch + vLLM)
+#
+# 构建:
+#   docker build -t cosyvoice-tts-api:npu -f Dockerfile.npu .
+#
+# 与 GPU 版 (Dockerfile.uv) 的差异:
+#   - 基础镜像: vllm-ascend (非 nvidia/cuda)
+#   - 不装 torchcodec (NPU PyTorch 不兼容, app_npu.py 用 soundfile fallback)
+#   - 不装 tensorrt / deepspeed (NVIDIA 专有)
+#   - openai-whisper 需要 --no-build-isolation (pkg_resources)
+#   - 启动文件为 app_npu.py (非 app.py)
+#
+# 内网 pip 源:
+#   构建时通过 --build-arg PIP_INDEX_URL=http://... 传入
+# ============================================================
+
+FROM quay.io/ascend/vllm-ascend:v0.17.0rc1
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_TRUSTED_HOST=""
+
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+
+# ── 系统依赖 ──
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends ffmpeg sox libsox-dev curl && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/CosyVoice
+COPY . .
+
+ENV PYTHONPATH="/workspace/CosyVoice:/workspace/CosyVoice/third_party/Matcha-TTS"
+
+# ── Step 1: 降级 setuptools (openai-whisper 需要 pkg_resources) ──
+RUN pip install --no-cache-dir "setuptools<71" wheel
+
+# ── Step 2: 安装依赖 (排除 NVIDIA 专有包) ──
+RUN grep -v -E "^(tensorrt|onnxruntime-gpu|deepspeed|torch==|torchaudio==|--extra-index)" requirements.txt > /tmp/req_npu.txt && \
+    grep -v "openai-whisper" /tmp/req_npu.txt > /tmp/req_npu_no_whisper.txt && \
+    pip install --no-cache-dir -r /tmp/req_npu_no_whisper.txt && \
+    pip install --no-cache-dir --no-build-isolation openai-whisper==20231117
+
+# ── Step 3: 补装依赖 ──
+RUN pip install --no-cache-dir onnxruntime torchaudio python-multipart
+
+# ── Step 4: 升级 transformers (vLLM 0.17 需要 >=4.56) ──
+RUN pip install --no-cache-dir "transformers>=4.56,<5"
+
+# 注意: 不装 torchcodec (NPU PyTorch 不兼容)
+# app_npu.py 中 load_wav 已 patch 为 soundfile
+
+# ── Step 5: 复制 NPU 专用文件 ──
+# 覆盖 GPU 版本的同名文件
+#COPY app_npu.py /workspace/CosyVoice/app_npu.py
+#COPY cosyvoice2_npu.py /workspace/CosyVoice/cosyvoice/vllm/cosyvoice2.py
+
+# ── Step 6: 创建运行时目录 ──
+RUN mkdir -p speakers uploads static/wavs logs
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=300s \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["python", "-m", "uvicorn", "app_npu:app", \
+     "--host", "0.0.0.0", "--port", "8080", \
+     "--workers", "1", "--log-level", "info", \
+     "--timeout-keep-alive", "300"]
