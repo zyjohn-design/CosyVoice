@@ -101,8 +101,8 @@ logger = logging.getLogger("cosyvoice-api")
 #  全局状态
 # ══════════════════════════════════════════════════════════════
 
-cosyvoice_model = None                      # CosyVoice2 模型实例
-_infer_semaphore: asyncio.Semaphore = None  # 推理并发信号量
+cosyvoice_model = None                           # CosyVoice2 模型实例
+_infer_semaphore: Optional[asyncio.Semaphore] = None  # 推理并发信号量
 _registered_spk_ids: set = set()            # 已成功注册到模型的说话人 ID 集合
 
 # 支持的参考音频格式
@@ -212,6 +212,10 @@ def _register_audio_speaker(spk_id: str, audio_path: str) -> bool:
         3. 方式1失败则尝试方式2: 加载为 16k tensor 再传 (CosyVoice2 风格)
         4. 注册成功后将 spk_id 加入 _registered_spk_ids 集合
     """
+    if cosyvoice_model is None:
+        logger.warning(f"模型未初始化, 跳过注册说话人 '{spk_id}'")
+        return False
+
     # [v1.0-fix2] prompt_text 必须准确对应参考音频内容
     # 之前用的是占位文本 "说话人{spk_id}。", 导致模型文本-音频对齐错误, 合成内容乱码
     # 现在从同名 .txt 文件读取真实文本
@@ -325,7 +329,7 @@ async def parse_request_params(request: Request) -> dict:
         dict: 合并后的参数字典 (query params + body params)
     """
     # Step 1: 先取 query string 参数
-    params = dict(request.query_params)
+    params: dict = dict(request.query_params)
 
     # Step 2: POST 请求再取 body 参数
     if request.method == "POST":
