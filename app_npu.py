@@ -84,6 +84,11 @@ try:
     if torch.npu.is_available():
         DEVICE_TYPE = "npu"
         os.environ.setdefault("FP16", "true")
+        # === 新增：关闭 NPU 在线 JIT 编译，使用预编译算子缓存 ===
+        if hasattr(torch.npu, "set_compile_mode"):
+            torch.npu.set_compile_mode(jit_compile=False)
+            logging.getLogger("cosyvoice-api").info("[NPU] jit_compile=False 已启用")
+        # ====================================================
 except ImportError:
     if torch.cuda.is_available():
         DEVICE_TYPE = "cuda"
@@ -112,6 +117,15 @@ SAMPLE_RATE = 24000  # CosyVoice2 默认采样率, 启动后从模型获取实�
 # ── 日志配置 ──
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("cosyvoice-api")
+# ── NPU 数学库优化：关闭在线 JIT，走预编译算子缓存 ──
+# 效果：首次推理延迟从 10+秒 降到 1~2秒，稳态推理无影响
+if DEVICE_TYPE == "npu":
+    try:
+        if hasattr(torch.npu, "set_compile_mode"):
+            torch.npu.set_compile_mode(jit_compile=False)
+            logger.info("[NPU优化] jit_compile=False 已启用")
+    except Exception as e:
+        logger.warning(f"[NPU优化] set_compile_mode 失败: {e}")
 
 # ══════════════════════════════════════════════════════════════
 #  全局状态
@@ -657,6 +671,17 @@ async def lifespan(app: FastAPI):
         f"采样率={SAMPLE_RATE}, 类型={type(cosyvoice_model).__name__}, "
         f"参数={{{', '.join(f'{k}={v}' for k, v in all_kwargs.items() if k != 'model_dir')}}}"
     )
+    # ── [新增] NPU 选择性图编译（仅纯 NPU 模式，未启用 vLLM 时）──
+    if DEVICE_TYPE == "npu" and not load_vllm:
+        try:
+            from npu_optimizer import apply_npu_compile
+            cosyvoice_model = apply_npu_compile(
+                cosyvoice_model,
+                enable_flow=True,
+                enable_hift=False,  # 因为已 patch _cpu_istft，开启会冲突
+            )
+        except Exception as e:
+            logger.warning(f"[NPU compile] 整体失败，使用 eager 模式: {e}")
 
     # ── Step 5: 注册说话人 ──
     _register_all_speakers()

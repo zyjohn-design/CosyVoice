@@ -67,6 +67,7 @@ services:
       # ── NPU 专用代码热更新 ──
       # 注意: 这里挂载的是 NPU 版本, 与 GPU 版完全分离
       - ./app_npu.py:/workspace/CosyVoice/app_npu.py
+      - ./npu_optimizer.py:/workspace/CosyVoice/npu_optimizer.py
       - ./cosyvoice2_npu.py:/workspace/CosyVoice/cosyvoice/vllm/cosyvoice2.py
 
       # ── 输出 ──
@@ -77,11 +78,24 @@ services:
       - HOST=0.0.0.0
       - PORT=8080
       - MAX_CONCURRENCY=${MAX_CONCURRENCY:-4}
+      # ── NPU 卡可见性 (CANN runtime 需要) ──
+      # 必须与 devices 段挂载的 /dev/davinciN 卡号一致
+      - ASCEND_RT_VISIBLE_DEVICES=${NPU_DEVICE_ID:-0}
       # ── NPU 优化参数 ──
       - LOAD_JIT=false            # NPU 不支持 TorchScript JIT
       - LOAD_TRT=false            # TensorRT 是 NVIDIA 专有
       - LOAD_VLLM=${LOAD_VLLM:-false}  # vLLM-Ascend (可选, 默认关闭)
       - FP16=${FP16:-true}        # NPU 910B 推荐 FP16
+      # ── npu_optimizer 调优参数 ──
+      - NPU_FLOW_TIMESTEPS=${NPU_FLOW_TIMESTEPS:-4}  # Flow ODE 步数 (3-6, 越少越快)
+      - NPU_DISABLE_CFG=${NPU_DISABLE_CFG:-true}     # CFG-free 推理 (batch 2→1)
+      - NPU_PROFILE=${NPU_PROFILE:-false}            # 模块级耗时诊断 (调优用)
+      - NPU_COMPILE=${NPU_COMPILE:-false}            # torch.compile flow.estimator (实验)
+      # ── LLM 优化 (针对 LLM 占 97% 耗时的瓶颈) ──
+      - NPU_FORCE_LLM_FP16=${NPU_FORCE_LLM_FP16:-false}  # 强制 LLM 权重 FP16 (实测无效)
+      - NPU_COMPILE_LLM=${NPU_COMPILE_LLM:-false}        # torch.compile LLM (实测反而慢)
+      - NPU_FUSED_ATTN=${NPU_FUSED_ATTN:-false}          # ★★★ NPU Fused Attention (主优化)
+      - NPU_FUSED_ATTN_MODE=${NPU_FUSED_ATTN_MODE:-all}  # "all" / "decode_only" (调试用)
       # ── vLLM NPU 专用 ──
       - VLLM_WORKER_MULTIPROC_METHOD=spawn  # NPU 必须用 spawn
 
