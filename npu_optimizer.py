@@ -1,45 +1,61 @@
 # npu_optimizer.py
 """
-CosyVoice NPU 910B 推理优化套件 v3
-===================================
+CosyVoice NPU 910B 推理优化套件 v4 (★ v5 已转为 fallback 路径)
+==============================================================
+
+★ v5 重要变更: 主推理路径已切换到 vLLM-Ascend (LOAD_VLLM=true)
+   - 见 docker-compose.npu.yml: LOAD_VLLM 默认 true
+   - 见 app_npu.py:675: LOAD_VLLM=true 时本模块完全不加载
+   - v3/v4 自研 NPU Fused Attention 有早停 bug (本模块代码已实证)
+   本文件保留供 vLLM 跑不通时作为 fallback (LOAD_VLLM=false)。
+   Flow 优化 (timesteps=4, CFG-free) 在 fallback 路径下仍然有效。
 
 通过 monkey-patch 实现优化，不修改主项目代码。
-在 app_npu.py 模型加载后调用 apply_npu_compile() 即可。
+在 app_npu.py 模型加载后调用 apply_npu_compile() 即可 (仅 fallback 路径)。
+
+v4 更新 — 尝试修复 v3 早停 bug (实测未根治)
+──────────────────────────────────────────────────────────────
+v3 的 LLM Fused Attention 实测有 60-80% 速度提升，但 LLM 输出 token
+早停 (speech_len 仅为正常的 26-47%)，导致语音被截断。
+v4 尝试的层选择性 (skip_last_4) + inner_precise=0 + decode sparse=0
+组合实测后 speech_len 仍只有正常的 24-50%, 未根治。结论: 算子级
+monkey-patch 与 transformers 框架语义对齐困难, 应改用 vLLM-Ascend。
+
+v4 通过三个互补修复解决数值漂移问题：
+
+  ★ 修复 1: 层选择性 fused attention (主)
+    - NPU_FUSED_ATTN_LAYERS="skip_last_4" (默认)
+    - 最后 4 层走 eager 保留 logit 精度，前 20 层用 fused 加速
+    - 原理: FP16 softmax 误差沿 24 层累积，最后几层直接影响 lm_head
+            输出 logits, 对早停判断最敏感
+
+  ★ 修复 2: inner_precise=0 (高精度 softmax)
+    - npu_fusion_attention 显式声明 inner_precise=0
+    - 强制 softmax 中间累加用 FP32, 不让 NPU 自动降到 FP16 模式
+
+  ★ 修复 3: decode 路径 sparse_mode=0 (无 mask)
+    - decode (S_q=1) 时单个 query 应看到所有 K, 不需 causal mask
+    - sparse_mode=3 在 S_q << S_kv 时可能有边界 bug
 
 优化策略 (按收益排序):
 ──────────────────────────────────────────────────────────────
-[1] Flow Matching n_timesteps: 10 → 4                  ★★★
-    - Euler ODE solver 步数减半，Flow 时间砍 60%
-    - NPU_FLOW_TIMESTEPS=4 (默认)
+[1] Flow Matching n_timesteps: 10 → 4                  ★★★ (生效)
+[2] CFG-free solve_euler: batch 2 → 1                  ★★★ (生效)
+[3] NPU Stream 上下文修复                              ★   (生效)
+[4] 模块级 profiling 诊断                              📊  (诊断)
+[5] torch.compile flow.estimator (实验)                ⚙   (默认关)
+[6] LLM dtype 诊断 + 选择性 FP16                       📊  (默认关)
+[7] torch.compile LLM (实验)                           ⚙   (默认关)
+[8] ★★★ NPU Fused Attention (v4 主战场)               ★★★ (待验证)
 
-[2] CFG-free solve_euler: batch 2 → 1                  ★★★
-    - 替换 solve_euler 跳过 Classifier-Free Guidance 分支
-    - 每步 estimator forward 从 batch=2 降到 batch=1
-    - Flow estimator 计算量再减 ~45%
-    - NPU_DISABLE_CFG=true (默认)
-    - 质量影响: 声音克隆相似度略降，中文 TTS 几乎无感
-
-[3] NPU Stream 上下文修复                              ★
-    - 修复 llm_context 退化为 nullcontext() 的问题
-
-[4] 模块级 profiling 诊断                              📊
-    - 包装 llm/flow/hift 的 inference 方法做精确耗时统计
-    - NPU_PROFILE=true 启用，默认关闭（避免 synchronize 开销）
-    - 每次推理 INFO 级日志；可调用 dump_profile() 拿汇总
-
-[5] torch.compile 选择性编译 (实验性)                  ⚙
-    - NPU_COMPILE=false (默认关闭)
-
-环境变量:
-    NPU_FLOW_TIMESTEPS=4    Flow ODE 步数 (3-6)
-    NPU_DISABLE_CFG=true    禁用 CFG，batch=1 推理
-    NPU_PROFILE=false       启用 NPU 同步耗时诊断
-    NPU_COMPILE=false       启用 torch.compile (实验)
-
-预期 RTF (基线 1.0):
-    + n_timesteps=4         → ~0.70
-    + CFG-free              → ~0.50
-    + 两者叠加               → ~0.40-0.50  ✓ 满足 0.5-0.6 目标
+核心环境变量:
+    NPU_FLOW_TIMESTEPS=4               Flow ODE 步数 (3-6)
+    NPU_DISABLE_CFG=true               禁用 CFG，batch=1 推理
+    NPU_PROFILE=false                  启用 NPU 同步耗时诊断
+    NPU_FUSED_ATTN=true                ★ 启用 NPU 融合 attention
+    NPU_FUSED_ATTN_LAYERS=skip_last_4  ★ 仅前 20 层用 fused
+    NPU_FUSED_ATTN_INNER_PRECISE=0     ★ 高精度 softmax (FP32 累加)
+    NPU_FUSED_ATTN_DECODE_SPARSE=0     ★ decode 无 mask
 """
 
 import os
@@ -74,6 +90,35 @@ NPU_FUSED_ATTN_MODE = os.getenv("NPU_FUSED_ATTN_MODE", "all").lower()
 _attn_short = os.getenv("NPU_FUSED_ATTN", "false").lower()
 if _attn_short in ("decode_only", "prefill_only"):
     NPU_FUSED_ATTN_MODE = _attn_short
+# NPU_FUSED_ATTN_DEBUG:
+#   "true"/"1"/"compare": 同时跑 fused + eager，记录 diff，返回 eager (默认 debug)
+#   "eager_only": 完全不调 NPU，验证钩子本身（dispatch + eager_attention_forward）是否会破坏输出
+NPU_FUSED_ATTN_DEBUG = os.getenv("NPU_FUSED_ATTN_DEBUG", "false").lower() in (
+    "true", "1", "compare", "eager_only"
+)
+NPU_FUSED_ATTN_DEBUG_N = int(os.getenv("NPU_FUSED_ATTN_DEBUG_N", "8"))
+
+# ══════════════════════════════════════════════════════════════
+#  v4 修复：解决 LLM 早停 bug 的关键参数
+# ══════════════════════════════════════════════════════════════
+# NPU_FUSED_ATTN_LAYERS: 选择性应用 fused attention 到指定层
+#   - "all"        (默认旧版) — 所有层都用 fused (会导致早停)
+#   - "skip_last_N" — 跳过最后 N 层 (推荐: skip_last_4)，保留 logit 层精度
+#   - "0-19"       — 仅 layer 0 到 19 使用 fused (Qwen2.5-0.5B 共 24 层)
+#   - "0,2,4-10"   — 任意组合
+# 原理: 早停 bug 源于 FP16 softmax 精度损失沿 24 层累积，影响最终 logits。
+#       last layers 直接输出到 lm_head，对精度最敏感；前面 layers 可以容忍。
+NPU_FUSED_ATTN_LAYERS = os.getenv("NPU_FUSED_ATTN_LAYERS", "skip_last_4")
+
+# NPU_FUSED_ATTN_INNER_PRECISE: npu_fusion_attention 的 inner_precise 参数
+#   - 0 (默认推荐) — 高精度模式，softmax 中间 tensor 用 FP32 累加
+#   - 1            — 高性能模式，全 FP16，可能造成数值漂移 → 早停
+NPU_FUSED_ATTN_INNER_PRECISE = int(os.getenv("NPU_FUSED_ATTN_INNER_PRECISE", "0"))
+
+# NPU_FUSED_ATTN_DECODE_SPARSE: decode 路径 (S_q=1) 的 sparse_mode
+#   - 0 (默认)    — 无 mask, 单 query 看到所有 K (语义上最正确)
+#   - 3           — rightDownCausal (理论等价但可能有边界 bug)
+NPU_FUSED_ATTN_DECODE_SPARSE = int(os.getenv("NPU_FUSED_ATTN_DECODE_SPARSE", "0"))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -517,12 +562,115 @@ _NPU_ATTN_FAILED_ONCE = {"flag": False}
 # 各种 mode skip 各只记录一次
 _MODE_SKIP_LOGGED = {}
 
+# ── v4 层选择性统计 ──
+# 记录每一层 fused 调用次数，便于诊断
+_LAYER_STATS = {"fused_by_layer": {}, "eager_by_layer": {}, "total_layers_seen": set()}
+_TOTAL_LAYER_COUNT = {"value": None}  # 自动推断的 LLM 总层数
+
 
 def _log_mode_skip(label):
     """模式跳过 fused 时打首次日志，证明 mode 真生效了。"""
     if label not in _MODE_SKIP_LOGGED:
         logger.info(f"[NPU attention] {label} 走 eager (mode={NPU_FUSED_ATTN_MODE})")
         _MODE_SKIP_LOGGED[label] = True
+
+
+def _parse_layer_spec(spec: str, layer_idx: int, total_layers: int = 24) -> bool:
+    """
+    解析层选择规格，判断 layer_idx 是否应使用 fused attention。
+
+    支持格式:
+        "all"                — 所有层 (返回 True)
+        "none"               — 无层 (返回 False)
+        "skip_last_4"        — 跳过最后 4 层
+        "skip_first_2"       — 跳过前 2 层
+        "0-19"               — 仅 0 到 19 层
+        "0,2,4-10"           — 离散+区间组合
+
+    Args:
+        spec:         配置字符串
+        layer_idx:    当前层索引
+        total_layers: LLM 总层数（用于解析 skip_last_N）
+
+    Returns:
+        True = 使用 fused; False = 使用 eager
+    """
+    s = spec.strip().lower()
+    if s in ("all", "true", "1", ""):
+        return True
+    if s in ("none", "false", "0"):
+        return False
+
+    if s.startswith("skip_last_"):
+        try:
+            n = int(s.replace("skip_last_", ""))
+            return layer_idx < (total_layers - n)
+        except ValueError:
+            return True
+
+    if s.startswith("skip_first_"):
+        try:
+            n = int(s.replace("skip_first_", ""))
+            return layer_idx >= n
+        except ValueError:
+            return True
+
+    # 解析 "0-19" / "0,2,4-10" 格式
+    for part in s.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            try:
+                lo, hi = part.split('-', 1)
+                if int(lo) <= layer_idx <= int(hi):
+                    return True
+            except ValueError:
+                continue
+        else:
+            try:
+                if int(part) == layer_idx:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def _should_use_fused_for_layer(module) -> bool:
+    """根据 NPU_FUSED_ATTN_LAYERS 配置 + module.layer_idx 决定是否走 fused。"""
+    if NPU_FUSED_ATTN_LAYERS in ("all", ""):
+        return True
+
+    layer_idx = getattr(module, "layer_idx", None)
+    if layer_idx is None:
+        # 没有层信息，默认走 fused
+        return True
+
+    total = _TOTAL_LAYER_COUNT["value"] or 24  # Qwen2.5-0.5B 默认 24 层
+    return _parse_layer_spec(NPU_FUSED_ATTN_LAYERS, layer_idx, total)
+
+
+def _record_layer_call(module, used_fused: bool):
+    """记录每一层 fused/eager 调用次数（用于诊断分布）。"""
+    layer_idx = getattr(module, "layer_idx", -1)
+    _LAYER_STATS["total_layers_seen"].add(layer_idx)
+    bucket = "fused_by_layer" if used_fused else "eager_by_layer"
+    _LAYER_STATS[bucket][layer_idx] = _LAYER_STATS[bucket].get(layer_idx, 0) + 1
+
+
+def dump_attention_layer_stats() -> str:
+    """对外接口：返回各层 fused/eager 调用分布。"""
+    layers = sorted(_LAYER_STATS["total_layers_seen"])
+    lines = ["[NPU attention layer stats]"]
+    for L in layers:
+        f = _LAYER_STATS["fused_by_layer"].get(L, 0)
+        e = _LAYER_STATS["eager_by_layer"].get(L, 0)
+        total = f + e
+        if total == 0:
+            continue
+        pct = f / total * 100
+        lines.append(f"  layer {L:2d}: fused={f:5d} eager={e:5d} ({pct:5.1f}% fused)")
+    return "\n".join(lines)
 
 
 def _npu_fused_attention_forward(module, query, key, value, attention_mask,
@@ -574,46 +722,44 @@ def _npu_fused_attention_forward(module, query, key, value, attention_mask,
         value = value.repeat_interleave(rep, dim=1)
         N_kv = N_q
 
-    # ── 改用 BNSD 布局 ──
-    # 直接用 transformers 给的 [B, N, S, D]，不做 BSH 转换，减少 view/transpose 出错
-    q_in = query.contiguous()
-    k_in = key.contiguous()
-    v_in = value.contiguous()
-
     if scaling is None:
         scaling = 1.0 / math.sqrt(D)
 
-    if S_q == 1:
-        # ── 解码路径（每 token 调用一次，主热点）──
-        # ★ 新增 actual_seq_lengths：显式告知有效 KV 长度，避免算子假设 padding
-        out = torch_npu.npu_incre_flash_attention(
-            q_in, k_in, v_in,
-            num_heads=N_q,
-            input_layout="BNSD",
-            scale_value=float(scaling),
-            num_key_value_heads=0,
-            actual_seq_lengths=[S_kv] * B,
-        )
+    # ══════════════════════════════════════════════════════════
+    # 统一融合算子: torch_npu.npu_fusion_attention (v4 改进版)
+    # ══════════════════════════════════════════════════════════
+    # 解决 v3 早停 bug 的关键：
+    #   1. inner_precise=0 — 强制 softmax 中间累加用 FP32 (默认是 0，显式声明)
+    #   2. decode (S_q=1)  — sparse_mode=0 (无 mask)，避免 sparse_mode=3 边界 bug
+    #   3. prefill (S_q>1) — sparse_mode=3 (rightDownCausal causal mask)
+    #   4. next_tockens=0  — 显式声明无未来 token (严格 causal)
+    #
+    # 返回 7-tuple: (output, softmax_max, softmax_sum, softmax_out, seed, offset, numels)
+    # 推理时只取 [0]
+    _is_decode = (S_q == 1)
+    if _is_decode:
+        # decode: 单 query 应看到所有 K (S_kv 个位置)，理论上无需 mask
+        _sparse = NPU_FUSED_ATTN_DECODE_SPARSE  # 默认 0 (无 mask)
     else:
-        # ── Prefill 路径 ──
-        # 显式 causal mask + actual_seq_lengths
-        mask = torch.triu(
-            torch.ones((S_q, S_kv), dtype=torch.bool, device=query.device),
-            diagonal=S_kv - S_q + 1,
-        )
-        out = torch_npu.npu_prompt_flash_attention(
-            q_in, k_in, v_in,
-            num_heads=N_q,
-            input_layout="BNSD",
-            scale_value=float(scaling),
-            num_key_value_heads=0,
-            atten_mask=mask,
-            sparse_mode=0,
-            actual_seq_lengths=[S_q] * B,
-            actual_seq_lengths_kv=[S_kv] * B,
-        )
+        # prefill: 标准 causal mask
+        _sparse = 3  # rightDownCausal
 
-    # BNSD 输出 [B, N, S, D] → [B, S, N, D]（transformers 期望）
+    result = torch_npu.npu_fusion_attention(
+        query.contiguous(),
+        key.contiguous(),
+        value.contiguous(),
+        head_num=N_q,
+        input_layout="BNSD",
+        scale=float(scaling),
+        keep_prob=1.0,
+        pre_tockens=65536,                          # 看所有历史 K
+        next_tockens=0,                             # 严格 causal: 不看未来
+        sparse_mode=_sparse,
+        inner_precise=NPU_FUSED_ATTN_INNER_PRECISE, # 默认 0 = 高精度 FP32 softmax
+    )
+    out = result[0]  # [B, N, S, D]
+
+    # BNSD → BSND（transformers 期望 [B, S, N, D]）
     out = out.transpose(1, 2).contiguous()
 
     # 还原 caller 期望的 dtype（与 query 一致）
@@ -623,8 +769,113 @@ def _npu_fused_attention_forward(module, query, key, value, attention_mask,
     return out, None
 
 
+_DEBUG_DIFF_COUNT = {"prefill": 0, "decode": 0}
+
+
+# 保存原始 sdpa attention 函数（由 _patch_qwen2_attention 在替换前赋值）
+_ORIGINAL_SDPA_ATTN = None
+
+
+def _run_eager_attention(module, query, key, value, attention_mask, **kwargs):
+    """
+    兜底 attention 调用入口。
+
+    优先级:
+      1. _ORIGINAL_SDPA_ATTN — 替换前保存的原版 sdpa
+         ← 与基线行为完全一致，最稳妥（mask 是 sdpa 风格）
+      2. transformers 当前注册的 sdpa（可能已被我们替换，不推荐）
+      3. eager_attention_forward
+      4. 手写 manual eager
+    """
+    # ── 1. 原始 sdpa（最稳）──
+    if _ORIGINAL_SDPA_ATTN is not None:
+        try:
+            return _ORIGINAL_SDPA_ATTN(module, query, key, value, attention_mask, **kwargs)
+        except Exception as e:
+            logger.debug(f"[NPU attn] original sdpa 失败: {e}")
+
+    # ── 2. 备选：手写兜底（与 eager 等价，避免可能被替换的注册表）──
+    scaling = kwargs.get("scaling") or (1.0 / math.sqrt(query.shape[-1]))
+    B, N_q, S_q, D = query.shape
+    _, N_kv, S_kv, _ = key.shape
+    if N_kv != N_q:
+        rep = N_q // N_kv
+        key = key.repeat_interleave(rep, dim=1)
+        value = value.repeat_interleave(rep, dim=1)
+    scores = torch.matmul(query, key.transpose(-2, -1)) * scaling
+    if attention_mask is not None:
+        scores = scores + attention_mask
+    probs = torch.softmax(scores, dim=-1, dtype=torch.float32).to(query.dtype)
+    out = torch.matmul(probs, value)
+    out = out.transpose(1, 2).contiguous()
+    return out, None
+
+
 def _npu_fused_attention_with_fallback(module, query, key, value, attention_mask, **kwargs):
-    """带兜底的 NPU attention：单 token 失败自动退回 eager，避免推理崩溃。"""
+    """带兜底的 NPU attention：单 token 失败自动退回 eager，避免推理崩溃。
+
+    NPU_FUSED_ATTN_DEBUG=true 时进入诊断模式：
+      - 同时跑 fused 和 eager
+      - 对比 max_abs_diff / rel_diff
+      - 前 NPU_FUSED_ATTN_DEBUG_N 次 (prefill 和 decode 各 N 次) 打 INFO 日志
+      - 强制返回 eager 输出（保证模型正确性）
+
+    v4 新增：层选择性
+      - 检查 NPU_FUSED_ATTN_LAYERS 配置
+      - 不在白名单内的层直接走 eager（保留 logit 层精度，解决早停 bug）
+    """
+    # ── v4: 层选择性检查（最关键的早停 bug 修复）──
+    use_fused = _should_use_fused_for_layer(module)
+    _record_layer_call(module, used_fused=use_fused)
+    if not use_fused:
+        # 该层被排除（如 skip_last_4），直接走 eager 保留精度
+        return _run_eager_attention(module, query, key, value, attention_mask, **kwargs)
+    # ── 调试模式 ──
+    # NPU_FUSED_ATTN_DEBUG=true 或 "compare": 同时跑 fused 和 eager，记录 diff，返回 eager
+    # NPU_FUSED_ATTN_DEBUG=eager_only: 不调用 NPU，纯 eager（验证钩子本身是否有问题）
+    if NPU_FUSED_ATTN_DEBUG:
+        S_q = query.shape[2]
+        S_kv = key.shape[2]
+        is_decode = (S_q == 1)
+        key_label = "decode" if is_decode else "prefill"
+
+        # 模式: eager_only — 完全不调 NPU
+        if os.getenv("NPU_FUSED_ATTN_DEBUG", "false").lower() == "eager_only":
+            if _DEBUG_DIFF_COUNT[key_label] < NPU_FUSED_ATTN_DEBUG_N:
+                _DEBUG_DIFF_COUNT[key_label] += 1
+                logger.info(
+                    f"[NPU attn debug] {key_label} #{_DEBUG_DIFF_COUNT[key_label]} "
+                    f"S_q={S_q} S_kv={S_kv} | eager_only (NPU 未调用)"
+                )
+            return _run_eager_attention(module, query, key, value, attention_mask, **kwargs)
+
+        # 模式: compare (默认 debug 模式)
+        try:
+            fused_out, _ = _npu_fused_attention_forward(
+                module, query, key, value, attention_mask, **kwargs
+            )
+            eager_out, _ = _run_eager_attention(
+                module, query, key, value, attention_mask, **kwargs
+            )
+            if _DEBUG_DIFF_COUNT[key_label] < NPU_FUSED_ATTN_DEBUG_N:
+                diff_t = (fused_out.float() - eager_out.float()).abs()
+                max_diff = diff_t.max().item()
+                mean_diff = diff_t.mean().item()
+                eager_max = eager_out.float().abs().max().item()
+                rel = max_diff / max(eager_max, 1e-6)
+                _DEBUG_DIFF_COUNT[key_label] += 1
+                logger.info(
+                    f"[NPU attn debug] {key_label} #{_DEBUG_DIFF_COUNT[key_label]} "
+                    f"S_q={S_q} S_kv={S_kv} | "
+                    f"max_diff={max_diff:.4f} mean_diff={mean_diff:.5f} "
+                    f"eager_max_abs={eager_max:.3f} rel={rel:.2%}"
+                )
+            return eager_out, None
+        except Exception as e:
+            logger.warning(f"[NPU attn debug] 对比失败，仅用 eager: {e}")
+            return _run_eager_attention(module, query, key, value, attention_mask, **kwargs)
+
+    # ── 正常模式: fused 优先，失败 fallback eager ──
     try:
         return _npu_fused_attention_forward(module, query, key, value, attention_mask, **kwargs)
     except Exception as e:
@@ -675,7 +926,23 @@ def _find_hf_transformer(root):
 
 
 def _patch_qwen2_attention(inner):
-    """注册 NPU fused attention 并将 LLM 切换到这个实现。"""
+    """
+    替换 transformers 注册表中的 sdpa attention 函数为 NPU 融合实现。
+
+    ★ 关键策略（v4）★
+    不再修改 config._attn_implementation。保持 "sdpa" 不变，让 transformers 的
+    Qwen2Model._update_causal_mask 按 sdpa 路径准备 attention_mask（多数情况返回
+    None，由 SDPA 内部 is_causal 处理）。
+
+    然后直接替换 ALL_ATTENTION_FUNCTIONS["sdpa"] 的函数指针为我们的 NPU 实现。
+    这样：
+      1. mask 准备与基线一致 (sdpa 风格)
+      2. dispatch 路径不变 (config._attn_implementation 还是 "sdpa")
+      3. 真正的 attention 计算被劫持到 NPU 融合算子
+      4. 失败时 fallback 到保存的原版 sdpa，与基线完全一致
+    """
+    global _ORIGINAL_SDPA_ATTN
+
     if not NPU_FUSED_ATTN:
         return
 
@@ -685,8 +952,7 @@ def _patch_qwen2_attention(inner):
         logger.warning("[NPU优化8] torch_npu 未安装，跳过 fused attention")
         return
 
-    # 检查算子可用性
-    needed = ["npu_incre_flash_attention", "npu_prompt_flash_attention"]
+    needed = ["npu_fusion_attention"]
     missing = [n for n in needed if not hasattr(torch_npu, n)]
     if missing:
         logger.warning(f"[NPU优化8] torch_npu 缺失算子 {missing}，跳过")
@@ -695,54 +961,72 @@ def _patch_qwen2_attention(inner):
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
     except ImportError:
-        logger.warning("[NPU优化8] transformers 版本不支持 ALL_ATTENTION_FUNCTIONS")
+        logger.warning("[NPU优化8] transformers 不支持 ALL_ATTENTION_FUNCTIONS，跳过")
         return
 
-    # 注册自定义 impl
-    ALL_ATTENTION_FUNCTIONS["npu_fused"] = _npu_fused_attention_with_fallback
+    # ── 检查 sdpa 是否在注册表中 ──
+    if "sdpa" not in ALL_ATTENTION_FUNCTIONS:
+        logger.warning("[NPU优化8] ALL_ATTENTION_FUNCTIONS 中没有 sdpa，跳过")
+        return
 
-    # 找到 LLM 根节点
+    # ── 验证 LLM 真的存在 ──
     llm = getattr(inner, "llm", None)
     if llm is None or not isinstance(llm, torch.nn.Module):
         logger.warning("[NPU优化8] inner.llm 不存在或不是 nn.Module，跳过")
         return
 
-    # ── 找到真正的 HF transformer ──
     target = _find_hf_transformer(llm)
     if target is None:
-        logger.warning(
-            "[NPU优化8] 在 LLM 子树中找不到 HF transformer "
-            "(无 config._attn_implementation)，跳过"
-        )
+        logger.warning("[NPU优化8] 找不到 HF transformer，跳过")
         return
 
-    logger.info(f"[NPU优化8] 找到 HF 模型主体: {type(target).__name__}")
-
-    # ── 切换 attention 实现 ──
     cfg = target.config
     original_impl = getattr(cfg, "_attn_implementation", "eager")
-    cfg._attn_implementation = "npu_fused"
 
-    # ── 统计 + 设置所有 Attention 子模块的 _attn_implementation ──
-    # transformers 4.45+ 在 Attention 模块上也维护一个 _attn_implementation 属性
+    # ── v4: 自动探测 LLM 总层数（用于 skip_last_N 解析）──
+    n_layers = (
+        getattr(cfg, "num_hidden_layers", None)
+        or getattr(cfg, "n_layer", None)
+        or 24  # Qwen2.5-0.5B 默认
+    )
+    _TOTAL_LAYER_COUNT["value"] = n_layers
+
+    logger.info(
+        f"[NPU优化8] 找到 HF 模型主体: {type(target).__name__} "
+        f"(原 _attn_implementation={original_impl}, num_layers={n_layers})"
+    )
+
+    # ── ★ 保存原始 sdpa，然后替换 ──
+    _ORIGINAL_SDPA_ATTN = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    ALL_ATTENTION_FUNCTIONS["sdpa"] = _npu_fused_attention_with_fallback
+
+    # ── 不修改 config._attn_implementation！保持 sdpa ──
+    # cfg._attn_implementation 不动
+
+    # ── 统计 attention 子模块（仅日志用，不修改）──
     attn_classes = {}
-    switched = 0
     for module in target.modules():
         cls_name = type(module).__name__
         if "Attention" in cls_name:
             attn_classes[cls_name] = attn_classes.get(cls_name, 0) + 1
-            if hasattr(module, "_attn_implementation"):
-                module._attn_implementation = "npu_fused"
-                switched += 1
-            # 同时更新模块自己持有的 config 引用（防御性）
-            mod_cfg = getattr(module, "config", None)
-            if mod_cfg is not None and mod_cfg is not cfg:
-                mod_cfg._attn_implementation = "npu_fused"
+
+    # ── v4: 预计算并展示哪些层会走 fused / eager ──
+    if NPU_FUSED_ATTN_LAYERS not in ("all", ""):
+        fused_layers = [i for i in range(n_layers)
+                        if _parse_layer_spec(NPU_FUSED_ATTN_LAYERS, i, n_layers)]
+        eager_layers = [i for i in range(n_layers) if i not in fused_layers]
+        logger.info(
+            f"[NPU优化8] 层选择策略 NPU_FUSED_ATTN_LAYERS='{NPU_FUSED_ATTN_LAYERS}': "
+            f"fused={fused_layers} ({len(fused_layers)}层), "
+            f"eager={eager_layers} ({len(eager_layers)}层)"
+        )
 
     logger.info(
-        f"[NPU优化8] Qwen2Attention 切换到 npu_fused "
-        f"({original_impl} → npu_fused, attention 子模块: {attn_classes}, "
-        f"_attn_implementation 已设置: {switched})"
+        f"[NPU优化8] 替换 ALL_ATTENTION_FUNCTIONS['sdpa'] 为 NPU 融合实现 "
+        f"(_attn_implementation 保持 {original_impl}, "
+        f"attention 子模块: {attn_classes}, "
+        f"inner_precise={NPU_FUSED_ATTN_INNER_PRECISE}, "
+        f"decode_sparse_mode={NPU_FUSED_ATTN_DECODE_SPARSE})"
     )
 
 
@@ -782,6 +1066,17 @@ def apply_npu_compile(cosyvoice, enable_flow=True, enable_hift=False):
 
     flow = getattr(inner, "flow", None)
 
+    # ── v5 提示: 当前走 fallback 路径 ──
+    logger.warning(
+        "[NPU优化] ⚠ 你正在走 fallback 路径 (LOAD_VLLM=false)。"
+        "推荐切换到 vLLM-Ascend (LOAD_VLLM=true) 获得无早停 bug 的 LLM 加速。"
+    )
+    if NPU_FUSED_ATTN:
+        logger.warning(
+            "[NPU优化] ⚠⚠ NPU_FUSED_ATTN=true 实测有早停 bug "
+            "(speech_len 仅为正常的 24-50%), 仅在已知接受质量损失时启用。"
+        )
+
     logger.info(
         f"[NPU优化] 配置 | "
         f"timesteps={NPU_FLOW_TIMESTEPS} | "
@@ -791,7 +1086,11 @@ def apply_npu_compile(cosyvoice, enable_flow=True, enable_hift=False):
         f"compile_llm={NPU_COMPILE_LLM} | "
         f"force_llm_fp16={NPU_FORCE_LLM_FP16} | "
         f"fused_attn={NPU_FUSED_ATTN} | "
-        f"fused_attn_mode={NPU_FUSED_ATTN_MODE}"
+        f"fused_attn_mode={NPU_FUSED_ATTN_MODE} | "
+        f"fused_attn_layers='{NPU_FUSED_ATTN_LAYERS}' | "
+        f"inner_precise={NPU_FUSED_ATTN_INNER_PRECISE} | "
+        f"decode_sparse={NPU_FUSED_ATTN_DECODE_SPARSE} | "
+        f"fused_attn_debug={NPU_FUSED_ATTN_DEBUG}"
     )
 
     # ── 优化 1: Flow Matching 步数缩减 ──
