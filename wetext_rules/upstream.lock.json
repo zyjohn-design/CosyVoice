@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/wenet-e2e/WeTextProcessing",
+  "commit": "039007e6b819bd40c4c4a0644f3939da1da47e44",
+  "archive_sha256": "038a919f38378e63b1722554146de5f96164e09ad0ad7ffd2240ebbe53a3830c",
+  "pynini_version": "2.1.7",
+  "runtime_wetext_version": "0.0.4"
+}

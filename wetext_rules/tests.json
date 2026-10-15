@@ -1,0 +1,226 @@
+[
+  {
+    "input": "本次验证码是001024，请勿泄露。",
+    "expected": "本次验证码是零零一零二四，请勿泄露。",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "设备编号为1024，订单编号为202610090001。",
+    "expected": "设备编号为一零二四，订单编号为二零二六一零零九零零零一。",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "今年受理1024件，设备编号1024，验证码001024。",
+    "expected": "今年受理一千零二十四件，设备编号一零二四，验证码零零一零二四。",
+    "require_types": [
+      "identifier",
+      "measure"
+    ]
+  },
+  {
+    "input": "验证码001024",
+    "expected": "验证码零零一零二四",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "验证码：000000。",
+    "expected": "验证码：零零零零零零。",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "验证码是：００１０２４。",
+    "expected": "验证码是：零零一零二四。",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "设备编号为 1024。",
+    "expected": "设备编号为一零二四。",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "订单号: 202610090001.",
+    "expected": "订单号:二零二六一零零九零零零一.",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "设备编号1024订单编号00001。",
+    "expected": "设备编号一零二四订单编号零零零零一。",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "验证码零零一零二四。",
+    "expected": "验证码零零一零二四。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "校验码是0123456789。",
+    "expected": "校验码是零一二三四五六七八九。",
+    "require_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "发生事故数量1024件。",
+    "expected": "发生事故数量一千零二十四件。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "累计服务12345人，发放100000份资料。",
+    "expected": "累计服务一万二千三百四十五人，发放十万份资料。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "项目预算为1,024,000元。",
+    "expected": "项目预算为一百零二万四千元。",
+    "require_types": [
+      "measure"
+    ]
+  },
+  {
+    "input": "项目预算为1024000元。",
+    "expected": "项目预算为一百零二万四千元。"
+  },
+  {
+    "input": "费用为1,024.50元。",
+    "expected": "费用为一千零二十四点五零元。",
+    "require_types": [
+      "measure"
+    ]
+  },
+  {
+    "input": "道路通行效率提升了15%。",
+    "expected": "道路通行效率提升了百分之十五。"
+  },
+  {
+    "input": "事故数量同比下降12.5%。",
+    "expected": "事故数量同比下降百分之十二点五。"
+  },
+  {
+    "input": "设备故障率为0.05%。",
+    "expected": "设备故障率为百分之零点零五。"
+  },
+  {
+    "input": "手机号是13800138000。",
+    "expected": "手机号是幺三八零零幺三八零零零。"
+  },
+  {
+    "input": "办公室电话是027-87654321。",
+    "expected": "办公室电话是零二七八七六五四三二一。"
+  },
+  {
+    "input": "遇到火灾请拨打119，急救请拨打120。",
+    "expected": "遇到火灾请拨打幺幺九，急救请拨打幺二零。"
+  },
+  {
+    "input": "报告日期为2026年10月9日。",
+    "expected": "报告日期为二零二六年十月九日。"
+  },
+  {
+    "input": "会议日期为2026-10-09。",
+    "expected": "会议日期为二零二六年十月九日。"
+  },
+  {
+    "input": "会议于08:05开始，18:30结束。",
+    "expected": "会议于八点零五分开始，十八点三十分结束。"
+  },
+  {
+    "input": "这批货物重3.14吨，另一批重0.08吨。",
+    "expected": "这批货物重三点一四吨，另一批重零点零八吨。"
+  },
+  {
+    "input": "车辆时速为60km/h，货物重量为2.5kg。",
+    "expected": "车辆时速为每小时六十公里，货物重量为二点五千克。"
+  },
+  {
+    "input": "已完成任务总量的1/3，男女比例为2:1。",
+    "expected": "已完成任务总量的三分之一，男女比例为二比一。"
+  },
+  {
+    "input": "订单编号为1024ABC。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "订单编号为ABC1024。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "订单编号为2026-001。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "订单编号为1024.5。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "订单编号为2026/10/09。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "设备编号为1,024。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "验证码有效期为1024秒。",
+    "exclude_types": [
+      "identifier"
+    ]
+  },
+  {
+    "input": "累计发放1000份资料。",
+    "expected": "累计发放一千份资料。"
+  },
+  {
+    "input": "累计发放10000份资料。",
+    "expected": "累计发放一万份资料。"
+  },
+  {
+    "input": "累计发放100000份资料。",
+    "expected": "累计发放十万份资料。"
+  },
+  {
+    "input": "累计发放1000000份资料。",
+    "expected": "累计发放一百万份资料。"
+  },
+  {
+    "input": "累计发放10000000份资料。",
+    "expected": "累计发放一千万份资料。"
+  },
+  {
+    "input": "累计发放100000000份资料。",
+    "expected": "累计发放一亿份资料。"
+  }
+]

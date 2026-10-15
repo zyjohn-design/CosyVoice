@@ -1,0 +1,9 @@
+_upstream/
+dist/
+__pycache__/
+
+# 本目录中的构建源码和词典需要跟踪，不受项目根目录通用忽略规则影响。
+!build.py
+!requirements-build.txt
+!data/
+!data/*.tsv
