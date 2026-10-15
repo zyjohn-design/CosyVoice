@@ -730,10 +730,11 @@ app = FastAPI(
 )
 
 # ── [v1.0-fix5] 挂载静态文件目录 ──
-# 使用相对路径 "static" 而非 os.path.join(ROOT_DIR, "static")
+# 使用项目绝对路径，避免启动工作目录影响静态资源访问。
 # 生成的音频可通过 http://host:port/static/wavs/xxx.wav 直接访问下载
-os.makedirs("static/wavs", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+STATIC_DIR = os.path.join(ROOT_DIR, "static")
+os.makedirs(os.path.join(STATIC_DIR, "wavs"), exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # ══════════════════════════════════════════════════════════════

@@ -58,6 +58,9 @@ services:
       - /dev/hisi_hdc:/dev/hisi_hdc
 
     volumes:
+      # ── HTML 测试页面与生成音频输出 ──
+      - ./static:/workspace/CosyVoice/static
+
       # ── NPU 驱动 (宿主机挂载, 必须) ──
       - /usr/local/dcmi:/usr/local/dcmi
       - /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool

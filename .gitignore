@@ -49,3 +49,4 @@ pretrained_models/*
 *_pb2_grpc.py
 *_pb2.py
 *.tar
+chat_export_*.md

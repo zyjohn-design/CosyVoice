@@ -11,7 +11,7 @@
 #   - 本地模型目录 → 容器 pretrained_models/ (避免重复下载)
 #   - 本地 wetext 缓存 → 容器对应位置 (避免重复下载)
 #   - speakers/ 目录双向同步
-#   - static/wavs/ 输出目录
+#   - static/ HTML 页面与音频输出目录
 # ============================================================
 
 services:
@@ -62,8 +62,8 @@ services:
       # ── 说话人目录 (双向同步) ──
       - ./speakers:/workspace/CosyVoice/speakers
 
-      # ── 生成音频输出 ──
-      - ./static/wavs:/workspace/CosyVoice/static/wavs
+      # ── HTML 测试页面与生成音频输出 ──
+      - ./static:/workspace/CosyVoice/static
 
       # ── 日志 ──
       - ./logs:/workspace/CosyVoice/logs

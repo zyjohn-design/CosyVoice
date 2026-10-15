@@ -75,6 +75,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"        # 解决 macOS 上 OpenMP 重
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 # ══════════════════════════════════════════════════════════════
 #  配置项 (均可通过环境变量覆盖)
@@ -90,6 +91,14 @@ WAVS_DIR = os.getenv("WAVS_DIR", os.path.join(ROOT_DIR, "static", "wavs"))      
 LOGS_DIR = os.getenv("LOGS_DIR", os.path.join(ROOT_DIR, "logs"))                 # 日志目录
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(ROOT_DIR, "uploads"))           # 临时上传目录
 MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(ROOT_DIR, "pretrained_models", "CosyVoice2-0.5B"))  # 模型路径
+
+# 已注册说话人的统一推理策略。默认使用完整 zero-shot 上下文，以保留
+# 参考语音的韵律和自然度。遇到无法立即修复的异常参考音频时，可设置
+# REGISTERED_SPEAKER_USE_LLM_PROMPT=false 全局切换到无 LLM prompt 模式。
+REGISTERED_SPEAKER_USE_LLM_PROMPT = os.getenv(
+    "REGISTERED_SPEAKER_USE_LLM_PROMPT",
+    "true",
+).lower() in ("true", "1")
 
 SAMPLE_RATE = 24000  # CosyVoice2 默认采样率, 启动后从模型获取实际值
 
@@ -407,6 +416,35 @@ def collect_chunks(results: list) -> torch.Tensor:
     return torch.cat(chunks, dim=1)
 
 
+def inference_registered_speaker(
+    text: str,
+    spk_id: str,
+    *,
+    stream: bool,
+    speed: float = 1.0,
+):
+    """按全局统一策略对已注册说话人推理。"""
+    if REGISTERED_SPEAKER_USE_LLM_PROMPT:
+        return cosyvoice_model.inference_zero_shot(
+            text,
+            "",
+            "",
+            zero_shot_spk_id=spk_id,
+            stream=stream,
+            speed=speed,
+        )
+
+    # inference_cross_lingual 会继续使用已缓存的音色 embedding、flow speech
+    # token 和 mel，但会删除 LLM 的 prompt_text 与 prompt speech token。
+    return cosyvoice_model.inference_cross_lingual(
+        text,
+        "",
+        zero_shot_spk_id=spk_id,
+        stream=stream,
+        speed=speed,
+    )
+
+
 def save_to_wavs_dir(audio: torch.Tensor, sr: int, tag: str = "") -> tuple:
     """
     将音频保存到 WAVS_DIR 目录, 生成唯一文件名。
@@ -620,8 +658,8 @@ async def lifespan(app: FastAPI):
         logger.info(f"开始预热推理 ({len(warmup_texts)} 条, 说话人='{spk}') ...")
         for i, wt in enumerate(warmup_texts, 1):
             try:
-                for _ in cosyvoice_model.inference_zero_shot(
-                    wt, "", "", zero_shot_spk_id=spk, stream=False
+                for _ in inference_registered_speaker(
+                    wt, spk, stream=False
                 ):
                     pass
                 logger.info(f"  预热 [{i}/{len(warmup_texts)}] 完成: {len(wt)}字")
@@ -646,11 +684,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# HTML 测试页可连接其他主机上的服务；生产环境可限定允许的页面来源。
+# 例如 CORS_ORIGINS=https://tts.example.com,http://localhost:8080
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "*").split(",") if origin.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
 # ── [v1.0-fix5] 挂载静态文件目录 ──
-# 使用相对路径 "static" 而非 os.path.join(ROOT_DIR, "static")
+# 使用项目绝对路径，避免启动工作目录影响静态资源访问。
 # 生成的音频可通过 http://host:port/static/wavs/xxx.wav 直接访问下载
-os.makedirs("static/wavs", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+STATIC_DIR = os.path.join(ROOT_DIR, "static")
+os.makedirs(os.path.join(STATIC_DIR, "wavs"), exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -749,9 +797,8 @@ async def tts(request: Request):
             客户端可以边接收边播放, 实现低延迟。
             """
             try:
-                gen = cosyvoice_model.inference_zero_shot(
-                    text, "", "",
-                    zero_shot_spk_id=spk_id,
+                gen = inference_registered_speaker(
+                    text, spk_id,
                     stream=True,
                     speed=cosyvoice_speed,
                 )
@@ -779,9 +826,8 @@ async def tts(request: Request):
     try:
         # 在线程池中执行推理, 避免阻塞 event loop
         results = await run_in_pool(
-            lambda: list(cosyvoice_model.inference_zero_shot(
-                text, "", "",
-                zero_shot_spk_id=spk_id,
+            lambda: list(inference_registered_speaker(
+                text, spk_id,
                 stream=False,
                 speed=cosyvoice_speed,
             ))
@@ -975,9 +1021,8 @@ async def tts_stream(
                 spk_id = resolve_voice(voice)
                 if not spk_id:
                     return
-                gen = cosyvoice_model.inference_zero_shot(
-                    text, "", "",
-                    zero_shot_spk_id=spk_id,
+                gen = inference_registered_speaker(
+                    text, spk_id,
                     stream=True, speed=speed,
                 )
 

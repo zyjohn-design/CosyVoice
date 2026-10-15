@@ -460,8 +460,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CosyVoice TTS API (全模型兼容)", version="3.0.0", lifespan=lifespan)
-os.makedirs("static/wavs", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+STATIC_DIR = os.path.join(ROOT_DIR, "static")
+os.makedirs(os.path.join(STATIC_DIR, "wavs"), exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # ══════════════════════════════════════════════════════════════
