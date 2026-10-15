@@ -38,12 +38,23 @@ def main():
         if not (base/relative).is_file():
             parser.error(f'基础模型缺少文件：{base/relative}')
     sys.path.insert(0, str(upstream))
-    from normalizer import BusinessNormalizer
+    from normalizer import BusinessNormalizer, extend_english_numbers
+
+    # 后续重编译从未扩展过的英文基础图开始，避免旧规则与新规则叠加。
+    english_base = base/'custom_rules/base_en'
+    if not english_base.is_dir():
+        english_base = base/'en/tn'
+    for name in ('tagger.fst', 'verbalizer.fst'):
+        if not (english_base/name).is_file():
+            parser.error(f'缺少英文基础规则：{english_base/name}')
 
     models = []
     for remove_erhua in (False, True):
         print(f'编译中文 TN，remove_erhua={remove_erhua}', flush=True)
         models.append(BusinessNormalizer(ROOT/'data', remove_erhua=remove_erhua))
+    print('编译英文 TN 的整句中文标点数字规则', flush=True)
+    en_tagger, en_verbalizer = extend_english_numbers(
+        english_base/'tagger.fst', english_base/'verbalizer.fst', ROOT/'data')
     # 所有图先编译成功，再创建新的发布目录。
     shutil.copytree(base, output,
                     ignore=shutil.ignore_patterns('.*', '__pycache__', 'SHA256SUMS', 'custom_rules'))
@@ -51,6 +62,8 @@ def main():
     normal.tagger.optimize().write(str(output/'zh/tn/tagger.fst'))
     normal.verbalizer.optimize().write(str(output/'zh/tn/verbalizer.fst'))
     without_erhua.verbalizer.optimize().write(str(output/'zh/tn/verbalizer_remove_erhua.fst'))
+    en_tagger.write(str(output/'en/tn/tagger.fst'))
+    en_verbalizer.write(str(output/'en/tn/verbalizer.fst'))
     # 将来源、配置、构建版本一同发布，便于以后复现。
     sources = [ROOT/name for name in ('rules.py', 'normalizer.py', 'build.py', 'fetch_upstream.py',
                                      'verify.py', 'tests.json', 'upstream.lock.json',
@@ -62,6 +75,9 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
     shutil.copy2(upstream/'LICENSE', source_dir/'UPSTREAM_LICENSE')
+    (source_dir/'base_en').mkdir()
+    for name in ('tagger.fst', 'verbalizer.fst'):
+        shutil.copy2(english_base/name, source_dir/'base_en'/name)
     metadata = {'upstream': lock, 'pynini': version('pynini'),
                 'source_sha256': {str(p.relative_to(ROOT)): digest(p) for p in sources},
                 'upstream_source_sha256': {
@@ -69,6 +85,8 @@ def main():
                     for p in sorted((upstream/'tn').rglob('*'))
                     if p.is_file() and p.suffix in ('.py', '.tsv', '.far')},
                 'base_zh_sha256': {name: digest(base/'zh/tn'/name)
+                                  for name in ('tagger.fst', 'verbalizer.fst')},
+                'base_en_sha256': {name: digest(english_base/name)
                                   for name in ('tagger.fst', 'verbalizer.fst')}}
     (output/'custom_rules/build.json').write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding='utf-8')

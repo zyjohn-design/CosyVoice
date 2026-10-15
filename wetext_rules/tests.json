@@ -222,5 +222,218 @@
   {
     "input": "累计发放100000000份资料。",
     "expected": "累计发放一亿份资料。"
+  },
+  {
+    "lang": "auto",
+    "input": "1024。",
+    "expected": "一千零二十四.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "100000。",
+    "expected": "十万.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "12.5%。",
+    "expected": "百分之十二点五.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "-5。",
+    "expected": "负五.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "１０２４。",
+    "expected": "一千零二十四.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "1,024,000。",
+    "expected": "一百零二万四千.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "1024！",
+    "expected": "一千零二十四!",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "1024",
+    "expected": "ten twenty four",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "1024.",
+    "expected": "ten twenty four.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "Room 1024.",
+    "expected": "Room ten twenty four.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "Room 1024。",
+    "expected": "Room ten twenty four。",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "There are 1024 items.",
+    "expected": "There are ten twenty four items.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "The price is $12.50.",
+    "expected": "The price is twelve point five dollars.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "1024。",
+    "expected": "一千零二十四.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "100000。",
+    "expected": "十万.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "12.5%。",
+    "expected": "百分之十二点五.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "-5。",
+    "expected": "负五.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "１０２４。",
+    "expected": "一千零二十四.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "1,024,000。",
+    "expected": "一百零二万四千.",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "1024！",
+    "expected": "一千零二十四!",
+    "require_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "1024",
+    "expected": "ten twenty four",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "1024.",
+    "expected": "ten twenty four.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "Room 1024.",
+    "expected": "Room ten twenty four.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "Room 1024。",
+    "expected": "Room ten twenty four。",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "There are 1024 items.",
+    "expected": "There are ten twenty four items.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "en",
+    "input": "The price is $12.50.",
+    "expected": "The price is twelve point five dollars.",
+    "exclude_types": [
+      "zh_number"
+    ]
+  },
+  {
+    "lang": "auto",
+    "input": "发生事故1024件。",
+    "expected": "发生事故一千零二十四件。"
   }
 ]

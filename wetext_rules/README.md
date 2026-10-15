@@ -10,8 +10,9 @@
 | --- | --- |
 | `data/identifier_fields.tsv` | 需要逐位读的字段名，第一列匹配文字，第二列字段读法，用 TAB 分隔 |
 | `data/digits.tsv` | 每个数字的读法，目前 1 读“一”，支持半角、全角数字 |
+| `data/zh_numeric_punctuation.tsv` | 无上下文数字使用中文读法的标点信号及输出标点 |
 | `rules.py` | 原生 Identifier FST 语法及纯数字编号边界约束 |
-| `normalizer.py` | 在上游中文 TN 规则清单中注册 Identifier，保留其他规则 |
+| `normalizer.py` | 注册 Identifier，并在英文图中加入整句中文标点数字路径 |
 | `tests.json` | 输入、期望读法、必须出现或不应出现的标注类型 |
 | `build.py` | 编译并导出完整的新模型目录，不覆盖原模型 |
 | `verify.py` | 直接用 wetext 0.0.4 加载 FST 验证，不导入 CosyVoice |
@@ -29,6 +30,14 @@
 中间标注为 `identifier { value: "验证码是001024" }`，原始数字保留在 tagger 字段内，verbalizer 负责转成中文。读取规则和权重的操作发生在构建阶段；生成的 FST 自身完成分类和转换。
 
 目前 Identifier 只处理明确字段后的纯数字值。含字母、横线、斜线或小数点的复合编号不匹配 Identifier，交给原规则处理；不对其读法作逐位读保证。带空格分组的手机号仍需要另行定义电话规则。
+
+## 没有汉字的数字文本
+
+CosyVoice 和 wetext 0.0.4 都会将没有汉字的文本选入英文路径，中文句号本身不算汉字。因此只修改中文 FST 不能修复 `1024。` 的英文读法。
+
+英文 FST 现在增加了一条整句规则：只有整段由数字、小数/百分比和中文标点组成时，使用中文数值读法。例如 `1024。` 输出 `一千零二十四.`，`100000。` 输出 `十万.`。末尾中文标点映射为 ASCII，兼容 CosyVoice 现有英文分句逻辑，避免追加重复句号。
+
+这一规则只作为整个输入的候选路径注册，不参与英文句子内部的局部匹配。`Room 1024。` 和 `There are 1024 items.` 仍使用英文读法。没有中文标点的 `1024`、`1024.` 保留原来的英文默认行为；缺乏语种信号时不强行将英文数字改成中文。
 
 ## 以后新增字段
 
@@ -83,7 +92,7 @@ python wetext_rules/fetch_upstream.py
 
 默认从 `wetext_rules/_upstream` 读取源码。需要指定已解压的源码目录时增加 `--upstream-dir /路径/WeTextProcessing`，目录内必须带 `UPSTREAM_COMMIT` 版本标记。
 
-编译器复制基础模型的公开文件，重新生成中文 TN 的 tagger、默认 verbalizer 和去儿化音 verbalizer，保留中英文 ITN、英文 TN 和其他辅助文件。原始模型不会被改动，输出目录已存在时拒绝覆盖。
+编译器复制基础模型的公开文件，重新生成中文 TN 的 tagger、默认 verbalizer 和去儿化音 verbalizer，同时扩展英文 TN 的整句中文标点数字路径，保留中英文 ITN 和其他辅助文件。英文基础图保存在发布目录的 `custom_rules/base_en/` 中，后续重编译从该原始图开始，避免旧业务规则叠加。原始模型不会被改动，输出目录已存在时拒绝覆盖。
 
 再使用原 TTS 的 wetext 0.0.4 Python 环境验证，例如本地项目环境：
 
@@ -94,6 +103,8 @@ python wetext_rules/fetch_upstream.py
 ```
 
 检查包括 SHA256、实际读法和 tagger 类型，两套 verbalizer 都要通过。报告只验证文本转换，不代表已经生成或试听音频。
+
+测试集同时覆盖实际 `lang=auto` 的语言选择、英文路径和正常英文句子。项目环境还可增加 `--check-frontend`，调用实际 `CosyVoiceFrontEnd.text_normalize` 验证语言分支和分句；仅构造文本方法所需状态，不加载模型权重。
 
 ## Docker 发布
 

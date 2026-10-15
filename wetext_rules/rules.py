@@ -22,6 +22,28 @@ class Identifier(Processor):
         self.verbalizer = self.delete_tokens(self.verbalize_field('value', self.graph))
 
 
+class ChineseStandaloneNumber(Processor):
+    """英文路径中，整句数字加中文标点使用中文读法。
+
+    只作为整句分类路径注册，避免影响英文句子里的数字。
+    将末尾标点输出为 ASCII，兼容 CosyVoice 已有的英文分句逻辑。
+    """
+
+    def __init__(self, cardinal, data_dir: Path):
+        super().__init__('zh_number')
+        digit = pynini.string_file(str(data_dir/'digits.tsv')).project('input')
+        grouped = digit.closure(1, 3) + (delete(',') + digit**3).plus
+        written = pynini.union('+', '-').ques + (digit.plus | grouped)
+        written += (pynini.accep('.') + digit.plus).ques
+        written += pynini.accep('%').ques
+        number = written @ cardinal.number
+        punctuation = pynini.string_file(str(data_dir/'zh_numeric_punctuation.tsv'))
+        spaces = delete(pynini.union(' ', '\t', '\n', '　')).star
+        self.graph = (spaces + number + punctuation.plus + spaces).optimize()
+        self.tagger = self.add_tokens(self.tag_field('value', self.graph))
+        self.verbalizer = self.delete_tokens(self.verbalize_field('value', self.graph))
+
+
 def constrain_identifier_boundaries(tagger, identifier):
     """在分类图中排除只识别混合编号前半段的路径，不改动输入文本。
 

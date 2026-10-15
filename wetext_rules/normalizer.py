@@ -3,6 +3,8 @@
 """固定上游语法并在同一个规则清单中注册本地业务规则。"""
 from pathlib import Path
 
+import pynini
+from pynini.lib.pynutil import add_weight
 from pynini.lib.pynutil import delete
 from tn.chinese.normalizer import Normalizer
 from tn.chinese.rules.cardinal import Cardinal
@@ -19,7 +21,7 @@ from tn.chinese.rules.time import Time
 from tn.chinese.rules.whitelist import Whitelist
 from tn.processor import RuleSpec
 
-from rules import Identifier, constrain_identifier_boundaries
+from rules import ChineseStandaloneNumber, Identifier, constrain_identifier_boundaries
 
 
 class BusinessNormalizer(Normalizer):
@@ -54,3 +56,14 @@ class BusinessNormalizer(Normalizer):
                                   remove_puncts=self.remove_puncts,
                                   full_to_half=self.full_to_half, tag_oov=self.tag_oov).processor
         self.verbalizer = (self.verbalizer_union(rules) @ processor).star
+
+
+def extend_english_numbers(base_tagger: Path, base_verbalizer: Path, data_dir: Path):
+    """保留基础英文图，并增加整句中文标点数字路径。"""
+    rule = ChineseStandaloneNumber(Cardinal(), data_dir)
+    # 不对新路径做闭包；否则英文句子中的数字也可能被改成中文。
+    tagger = pynini.union(pynini.Fst.read(str(base_tagger)),
+                         add_weight(rule.tagger, -1.0)).optimize()
+    verbalizer = pynini.union(pynini.Fst.read(str(base_verbalizer)),
+                             rule.verbalizer).optimize()
+    return tagger, verbalizer

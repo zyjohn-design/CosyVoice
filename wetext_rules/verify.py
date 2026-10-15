@@ -6,6 +6,7 @@ import json
 import sys
 from importlib.metadata import version
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
 
@@ -15,6 +16,8 @@ def main():
     parser.add_argument('--model-dir', type=Path,
                         default=Path.home()/'.cache/modelscope/hub/pengzhendong/wetext')
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--check-frontend', action='store_true',
+                        help='额外调用实际 CosyVoice 文本前端验证语言分支与分句，不加载权重')
     args = parser.parse_args()
     lock = json.loads((ROOT/'upstream.lock.json').read_text())
     if version('wetext') != lock['runtime_wetext_version']:
@@ -35,10 +38,20 @@ def main():
     cases = json.loads((ROOT/'tests.json').read_text())
     results = []
     for verbalizer in ('verbalizer.fst', 'verbalizer_remove_erhua.fst'):
-        normalizer = Normalizer(tagger_path=str(model_dir/'zh/tn/tagger.fst'),
-                                verbalizer_path=str(model_dir/'zh/tn'/verbalizer), lang='zh')
+        normalizers = {
+            'zh': Normalizer(tagger_path=str(model_dir/'zh/tn/tagger.fst'),
+                             verbalizer_path=str(model_dir/'zh/tn'/verbalizer), lang='zh'),
+            'en': Normalizer(tagger_path=str(model_dir/'en/tn/tagger.fst'),
+                             verbalizer_path=str(model_dir/'en/tn/verbalizer.fst'), lang='en'),
+        }
+        # 只替换测试资源定位，仍由实际 wetext 的 auto 逻辑选择语言；避免联网。
+        with patch('wetext.wetext.snapshot_download', return_value=str(model_dir)):
+            normalizers['auto'] = Normalizer(lang='auto', remove_erhua=verbalizer != 'verbalizer.fst')
         for case in cases:
-            tagged = normalizer.tag(case['input'])
+            lang = case.get('lang', 'zh')
+            normalizer = normalizers[lang]
+            selected_lang = ('zh' if normalizer.contains_chinese(case['input']) else 'en') if lang == 'auto' else lang
+            tagged = normalizer.tag(case['input'], lang=selected_lang)
             actual = normalizer.normalize(case['input'])
             errors = []
             if 'expected' in case and actual != case['expected']:
@@ -49,8 +62,32 @@ def main():
             for token_type in case.get('exclude_types', []):
                 if token_type + ' {' in tagged:
                     errors.append(f'不应匹配 {token_type}')
-            results.append({**case, 'verbalizer': verbalizer, 'tagged': tagged,
+            results.append({**case, 'verbalizer': verbalizer, 'selected_lang': selected_lang, 'tagged': tagged,
                             'actual': actual, 'passed': not errors, 'errors': errors})
+    if args.check_frontend:
+        from types import SimpleNamespace
+        import inflect
+        if (ROOT.parent/'cosyvoice/cli/frontend.py').is_file():
+            sys.path.insert(0, str(ROOT.parent))
+        from cosyvoice.cli.frontend import CosyVoiceFrontEnd
+        frontend = CosyVoiceFrontEnd.__new__(CosyVoiceFrontEnd)
+        frontend.text_frontend = 'wetext'
+        frontend.zh_tn_model = frontend.en_tn_model = normalizers['auto']
+        frontend.inflect_parser = inflect.engine()
+        frontend.allowed_special = 'all'
+        frontend.tokenizer = SimpleNamespace(encode=lambda text, **kwargs: list(text))
+        for case in cases:
+            if case.get('lang') != 'auto' or 'expected' not in case:
+                continue
+            modes = (False, True) if 'zh_number' in case.get('require_types', []) else (False,)
+            for split in modes:
+                actual = frontend.text_normalize(case['input'], split=split)
+                if split:
+                    actual = ''.join(actual)
+                matches = actual == case['expected']
+                results.append({**case, 'stage': 'CosyVoiceFrontEnd', 'split': split,
+                                'actual': actual, 'passed': matches,
+                                'errors': [] if matches else ['实际前端分支输出不匹配']})
     passed = sum(result['passed'] for result in results)
     report = {'runtime': version('wetext'), 'python': sys.executable,
               'model_dir': str(model_dir), 'passed': passed,
